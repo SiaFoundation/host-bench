@@ -80,7 +80,7 @@ func (m *Manager) downloadBenchmark(session *proto3.Session, pt rhp3.HostPriceTa
 	budget = budget.Mul64(125).Div64(100)
 	account := rhp3.Account(m.privKey.PublicKey())
 
-	payment := proto3.ContractPayment(revision, m.privKey, account)
+	payment := proto3.ContractPayment(revision, m.privKey, rhp3.ZeroAccount)
 	totalCost := budget.Mul64(uint64(len(roots)))
 	balance, err := session.FundAccount(account, payment, totalCost)
 	if err != nil {
@@ -116,7 +116,7 @@ func (m *Manager) uploadBenchmark(session *proto3.Session, pt rhp3.HostPriceTabl
 	budget = budget.Mul64(125).Div64(100)
 	account := rhp3.Account(m.privKey.PublicKey())
 
-	payment := proto3.ContractPayment(revision, m.privKey, account)
+	payment := proto3.ContractPayment(revision, m.privKey, rhp3.ZeroAccount)
 
 	totalCost := budget.Mul64(sectors)
 	balance, err := session.FundAccount(account, payment, totalCost)
