@@ -2,7 +2,6 @@ package benchmark
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -19,6 +18,7 @@ import (
 )
 
 type (
+	// A ChainManager provides access to the current consensus state.
 	ChainManager interface {
 		// TipState returns the current consensus state.
 		TipState() consensus.State
@@ -46,6 +46,7 @@ type (
 		wallet Wallet
 	}
 
+	// A Result contains the results of a benchmark.
 	Result struct {
 		Sectors      uint64         `json:"sectors"`
 		Handshake    time.Duration  `json:"handshake"`
@@ -71,10 +72,6 @@ type (
 		Elapsed time.Duration
 		P99     time.Duration
 	}
-)
-
-var (
-	ErrNotFound = errors.New("not found")
 )
 
 // downloadBenchmark benchmarks the host's download performance.
@@ -275,6 +272,7 @@ func downloadSector(session *proto3.Session, pt rhp3.HostPriceTable, revision *r
 	return elapsed, cost, nil
 }
 
+// New creates a new benchmark manager.
 func New(privKey types.PrivateKey, cm ChainManager, tp TPool, w Wallet, log *zap.Logger) *Manager {
 	return &Manager{
 		privKey: privKey,

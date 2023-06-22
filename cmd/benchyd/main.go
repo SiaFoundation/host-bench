@@ -52,8 +52,7 @@ func main() {
 	flag.BoolVar(&bootstrapPeers, "bootstrap", false, "bootstrap peers")
 	flag.Parse()
 
-	switch flag.Arg(0) {
-	case "seed":
+	if flag.Arg(0) == "seed" {
 		var seed [32]byte
 		phrase := cw.NewSeedPhrase()
 		if err := cw.SeedFromPhrase(&seed, phrase); err != nil {

@@ -22,6 +22,7 @@ type (
 		Version string `json:"version"`
 	}
 
+	// A BenchmarkRequest initiates a benchmark with a host
 	BenchmarkRequest struct {
 		Address string          `json:"address"`
 		HostKey types.PublicKey `json:"hostKey"`

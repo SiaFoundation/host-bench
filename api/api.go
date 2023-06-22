@@ -34,6 +34,7 @@ type (
 		TipState() consensus.State
 	}
 
+	// A Benchmark benchmarks hosts and manages contracts
 	Benchmark interface {
 		BenchmarkHost(ctx context.Context, hostAddr string, hostKey types.PublicKey, sectors uint64) (res benchmark.Result, _ error)
 	}
