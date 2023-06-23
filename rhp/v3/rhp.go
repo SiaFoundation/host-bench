@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/bits"
 	"net"
@@ -15,6 +16,7 @@ import (
 	rhp2 "go.sia.tech/core/rhp/v2"
 	rhp3 "go.sia.tech/core/rhp/v3"
 	"go.sia.tech/core/types"
+	"go.sia.tech/mux/v1"
 )
 
 type (
@@ -306,6 +308,18 @@ func (s *Session) AppendSector(sector *[rhp2.SectorSize]byte, revision *rhp2.Con
 			},
 			Signature: finalizeResp.Signature[:],
 		},
+	}
+
+	// Read a final error from the stream. This is required due to how siad
+	// finalizes contracts. TODO: remove once network has switched to hostd
+	errFinalize := stream.ReadResponse(&finalizeResp, 256)
+	if errFinalize != nil &&
+		!errors.Is(errFinalize, io.EOF) &&
+		!errors.Is(errFinalize, mux.ErrClosedConn) &&
+		!errors.Is(errFinalize, mux.ErrClosedStream) &&
+		!errors.Is(errFinalize, mux.ErrPeerClosedStream) &&
+		!errors.Is(errFinalize, mux.ErrPeerClosedConn) {
+		return types.ZeroCurrency, fmt.Errorf("failed to read response: %w", errFinalize)
 	}
 	return resp.TotalCost, nil
 }
