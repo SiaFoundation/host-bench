@@ -22,6 +22,12 @@ type (
 		Version string `json:"version"`
 	}
 
+	// A ScanRequest scans a host's settings and price table
+	ScanRequest struct {
+		Address string          `json:"address"`
+		HostKey types.PublicKey `json:"hostKey"`
+	}
+
 	// A BenchmarkRequest initiates a benchmark with a host
 	BenchmarkRequest struct {
 		Address string          `json:"address"`

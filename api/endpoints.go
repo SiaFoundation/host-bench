@@ -64,6 +64,18 @@ func (a *api) handleDeleteSyncerPeer(c jape.Context) {
 	a.checkServerError(c, "failed to disconnect from peer", err)
 }
 
+func (a *api) handlePOSTScan(c jape.Context) {
+	var req ScanRequest
+	if err := c.Decode(&req); err != nil {
+		return
+	}
+	settings, err := a.bench.ScanHost(c.Request.Context(), req.Address, req.HostKey)
+	if !a.checkServerError(c, "failed to scan", err) {
+		return
+	}
+	c.Encode(settings)
+}
+
 func (a *api) handlePOSTBenchmark(c jape.Context) {
 	var req BenchmarkRequest
 	if err := c.Decode(&req); err != nil {

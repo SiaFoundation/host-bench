@@ -36,7 +36,8 @@ type (
 
 	// A Benchmark benchmarks hosts and manages contracts
 	Benchmark interface {
-		BenchmarkHost(ctx context.Context, hostAddr string, hostKey types.PublicKey, sectors uint64) (res benchmark.Result, _ error)
+		BenchmarkHost(ctx context.Context, hostAddr string, hostKey types.PublicKey, sectors uint64) (benchmark.Result, error)
+		ScanHost(ctx context.Context, hostAddr string, hostKey types.PublicKey) (benchmark.Settings, error)
 	}
 
 	// A Wallet manages Siacoins and funds transactions
@@ -80,6 +81,7 @@ func NewServer(g Syncer, chain ChainManager, tp TPool, bench Benchmark, wallet W
 		"PUT /syncer/peers":             api.handlePUTSyncerPeer,
 		"DELETE /syncer/peers/:address": api.handleDeleteSyncerPeer,
 		// benchmark endpoints
+		"POST /scan":      api.handlePOSTScan,
 		"POST /benchmark": api.handlePOSTBenchmark,
 		// wallet endpoints
 		"GET /wallet":              api.handleGETWallet,
