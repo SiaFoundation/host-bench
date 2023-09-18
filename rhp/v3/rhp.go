@@ -246,7 +246,7 @@ func (s *Session) AppendSector(sector *[rhp2.SectorSize]byte, revision *rhp2.Con
 	} else if resp.NewSize != revision.Revision.Filesize+rhp2.SectorSize {
 		return types.ZeroCurrency, fmt.Errorf("unexpected filesize: %v != %v", resp.NewSize, revision.Revision.Filesize+rhp2.SectorSize)
 	}
-	//TODO: validate proof
+	// TODO: validate proof
 	// revise the contract
 	revised := revision.Revision
 	revised.RevisionNumber++
@@ -325,13 +325,13 @@ func (s *Session) AppendSector(sector *[rhp2.SectorSize]byte, revision *rhp2.Con
 }
 
 // ReadSector downloads a sector from the host.
-func (s *Session) ReadSector(root types.Hash256, offset, length uint64, payment PaymentMethod, budget types.Currency) ([]byte, types.Currency, error) {
+func (s *Session) ReadSector(root types.Hash256, offset, length int, payment PaymentMethod, budget types.Currency) ([]byte, types.Currency, error) {
 	stream := s.t.DialStream()
 	defer stream.Close()
 
 	programData := make([]byte, 48)
-	binary.LittleEndian.PutUint64(programData[0:8], length)
-	binary.LittleEndian.PutUint64(programData[8:16], offset)
+	binary.LittleEndian.PutUint64(programData[0:8], uint64(length))
+	binary.LittleEndian.PutUint64(programData[8:16], uint64(offset))
 	copy(programData[16:], root[:])
 
 	req := rhp3.RPCExecuteProgramRequest{
@@ -359,12 +359,12 @@ func (s *Session) ReadSector(root types.Hash256, offset, length uint64, payment 
 	}
 
 	var resp rhp3.RPCExecuteProgramResponse
-	if err := stream.ReadResponse(&resp, 4096+length); err != nil {
+	if err := stream.ReadResponse(&resp, uint64(4096+length)); err != nil {
 		return nil, types.ZeroCurrency, fmt.Errorf("failed to read response: %w", err)
 	} else if resp.Error != nil {
 		return nil, types.ZeroCurrency, fmt.Errorf("failed to append sector: %w", resp.Error)
 	} else if len(resp.Output) != int(length) {
-		return nil, types.ZeroCurrency, fmt.Errorf("unexpected output length: %v != %v", len(resp.Output), length)
+		return nil, types.ZeroCurrency, fmt.Errorf("host returned wrong length: %v != %v", resp.OutputLength, length)
 	}
 	return resp.Output, resp.TotalCost, nil
 }
