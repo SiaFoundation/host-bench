@@ -30,4 +30,4 @@ EXPOSE 9881/tcp
 
 USER ${PUID}:${PGID}
 
-ENTRYPOINT [ "benchyd", "--log.stdout", "--env", "--dir", "/data", "--http", ":8484" ]
+ENTRYPOINT [ "benchyd", "--dir", "/data", "--api.addr", ":8484" ]
