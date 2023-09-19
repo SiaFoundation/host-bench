@@ -34,6 +34,7 @@ var (
 	dir            string
 	bootstrapPeers bool
 	apiAddr        string
+	gatewayAddr    string
 	logLevel       string
 )
 
@@ -69,6 +70,7 @@ func main() {
 
 	flag.StringVar(&dir, "dir", ".", "data directory")
 	flag.StringVar(&apiAddr, "api.addr", ":8484", "api address")
+	flag.StringVar(&gatewayAddr, "rpc", defaultGatewayAddr, "gateway address")
 	flag.StringVar(&logLevel, "log.level", "info", "log level")
 	flag.BoolVar(&bootstrapPeers, "bootstrap", false, "bootstrap peers")
 	flag.Parse()
@@ -142,7 +144,7 @@ func main() {
 		os.Exit(1)
 	}()
 
-	g, err := gateway.NewCustomGateway(":9981", bootstrapPeers, false, filepath.Join(dir, "gateway"), modules.ProdDependencies)
+	g, err := gateway.NewCustomGateway(gatewayAddr, bootstrapPeers, false, filepath.Join(dir, "gateway"), modules.ProdDependencies)
 	if err != nil {
 		log.Fatal("failed to create gateway", zap.Error(err))
 	}
