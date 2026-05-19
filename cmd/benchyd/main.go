@@ -101,7 +101,9 @@ func main() {
 	case "error":
 		level = zap.NewAtomicLevelAt(zap.ErrorLevel)
 	default:
-		log.Fatal("invalid log level", zap.String("level", logLevel))
+		fmt.Fprintf(os.Stderr, "invalid log level: %q\n", logLevel)
+		log.Sync()
+		os.Exit(1) //nolint:gocritic // log.Sync() flushed above
 	}
 
 	// create the data directory if it does not already exist
