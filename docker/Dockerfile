@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.20 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /benchy
 
