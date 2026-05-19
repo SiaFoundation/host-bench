@@ -151,11 +151,12 @@ func (s *Session) FormContract(hostAddr types.Address, renterKey types.PrivateKe
 	}
 	// verify the host revision signature
 	var hostSig types.Signature
-	copy(hostSig[:], hostSigsResp.RevisionSignature.Signature[:])
+	copy(hostSig[:], hostSigsResp.RevisionSignature.Signature)
 	if !s.hostKey.VerifyHash(sigHash, hostSig) {
 		return rhp2.ContractRevision{}, nil, errors.New("host returned an invalid signature")
 	}
-	formationTxn.Signatures = append(renterSignatures, hostSigsResp.ContractSignatures...)
+	formationTxn.Signatures = append(formationTxn.Signatures, renterSignatures...)
+	formationTxn.Signatures = append(formationTxn.Signatures, hostSigsResp.ContractSignatures...)
 
 	return rhp2.ContractRevision{
 		Revision: initRevision,

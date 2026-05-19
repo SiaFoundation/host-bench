@@ -160,12 +160,13 @@ func (s *Store) UpdateWallet(ccID modules.ConsensusChangeID, height uint64, fn f
 func (s *Store) VerifyWalletKey(seedHash types.Hash256) error {
 	var buf []byte
 	err := s.queryRow(`SELECT wallet_hash FROM global_settings`).Scan(&buf)
-	if err == nil && buf == nil {
+	switch {
+	case err == nil && buf == nil:
 		_, err := s.exec(`UPDATE global_settings SET wallet_hash=?`, sqlHash256(seedHash)) // wallet not initialized, set seed hash
 		return err
-	} else if err != nil {
+	case err != nil:
 		return fmt.Errorf("failed to query wallet seed hash: %w", err)
-	} else if seedHash != *(*types.Hash256)(buf) {
+	case seedHash != *(*types.Hash256)(buf):
 		return wallet.ErrDifferentSeed
 	}
 	return nil
