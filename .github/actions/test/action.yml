@@ -11,11 +11,11 @@ runs:
       shell: bash
       run: go generate ./...
     - name: Lint
-      uses: golangci/golangci-lint-action@v3
+      uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
       with:
         skip-cache: true
     - name: Test
-      uses: n8maninger/action-golang-test@v1
+      uses: n8maninger/action-golang-test@aa292dc81b16d34406a9551e629e0cdca00d9418 # v2.2.1
       with:
         args: "-race;-tags=testing netgo"
 #   - name: Check Endpoints
