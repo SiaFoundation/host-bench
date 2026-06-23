@@ -128,17 +128,6 @@ func consensusExists(dir string) bool {
 	return !errors.Is(err, os.ErrNotExist)
 }
 
-func splitPeers(peers string) []string {
-	var result []string
-	for peer := range strings.SplitSeq(peers, ",") {
-		peer = strings.TrimSpace(peer)
-		if peer != "" {
-			result = append(result, peer)
-		}
-	}
-	return result
-}
-
 func selectNetwork(name string, bootstrap bool, userPeers []string) (*consensus.Network, types.Block, []string, error) {
 	peers := append([]string(nil), userPeers...)
 	switch name {
