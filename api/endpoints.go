@@ -22,7 +22,7 @@ func (a *api) checkServerError(c jape.Context, context string, err error) bool {
 	return err == nil
 }
 
-func (a *api) handleGETConsensusState(c jape.Context) {
+func (a *api) handleGETConsensusTip(c jape.Context) {
 	var synced bool
 	for _, peer := range a.syncer.Peers() {
 		if peer.Synced() {
@@ -121,14 +121,14 @@ func (a *api) handleGETWallet(c jape.Context) {
 	})
 }
 
-func (a *api) handleGETWalletTransactions(c jape.Context) {
+func (a *api) handleGETWalletEvents(c jape.Context) {
 	limit, offset := parseLimitParams(c, 100, 500)
 
-	transactions, err := a.wallet.Events(offset, limit)
-	if !a.checkServerError(c, "failed to get wallet transactions", err) {
+	events, err := a.wallet.Events(offset, limit)
+	if !a.checkServerError(c, "failed to get wallet events", err) {
 		return
 	}
-	c.Encode(transactions)
+	c.Encode(events)
 }
 
 func (a *api) handleGETWalletPending(c jape.Context) {

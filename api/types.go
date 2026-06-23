@@ -10,7 +10,7 @@ type (
 		Address string `json:"address"`
 	}
 
-	// ConsensusState is the response body for the [GET] /consensus endpoint.
+	// ConsensusState is the response body for the [GET] /consensus/tip endpoint.
 	ConsensusState struct {
 		Synced     bool             `json:"synced"`
 		ChainIndex types.ChainIndex `json:"chainIndex"`

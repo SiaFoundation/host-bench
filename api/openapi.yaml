@@ -1,0 +1,392 @@
+openapi: 3.1.0
+info:
+  title: benchyd API
+  description: |
+    HTTP API for benchyd, the Sia host benchmarking daemon. The API exposes
+    consensus, syncer, and wallet state along with the host scan and benchmark
+    operations.
+
+    Sia core types are encoded as follows:
+      - Currency: base-10 string of hastings (1 SC = 10^24 H)
+      - Address: 76-character hex string (32-byte hash + 6-byte checksum)
+      - PublicKey: "ed25519:" followed by 64 hex characters
+      - Hash256 / BlockID / TransactionID: 64-character hex string
+      - Duration: integer number of nanoseconds
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8484
+    description: Default local API address
+tags:
+  - name: consensus
+  - name: syncer
+  - name: benchmark
+  - name: wallet
+paths:
+  /consensus/tip:
+    get:
+      tags: [consensus]
+      summary: Get the current consensus tip
+      operationId: getConsensusTip
+      responses:
+        "200":
+          description: The current chain tip and sync status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsensusState"
+
+  /syncer/address:
+    get:
+      tags: [syncer]
+      summary: Get the syncer's listen address
+      operationId: getSyncerAddress
+      responses:
+        "200":
+          description: The advertised syncer address
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "127.0.0.1:9981"
+
+  /syncer/peers:
+    get:
+      tags: [syncer]
+      summary: List connected peers
+      operationId: getSyncerPeers
+      responses:
+        "200":
+          description: The currently connected peers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Peer"
+    put:
+      tags: [syncer]
+      summary: Connect to a peer
+      operationId: connectSyncerPeer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncerConnectRequest"
+      responses:
+        "200":
+          description: The peer was connected
+        "500":
+          description: Failed to connect to the peer
+
+  /syncer/peers/{address}:
+    delete:
+      tags: [syncer]
+      summary: Disconnect from a peer
+      operationId: disconnectSyncerPeer
+      parameters:
+        - name: address
+          in: path
+          required: true
+          description: The network address of the peer to disconnect
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The peer was disconnected
+        "404":
+          description: The peer is not connected
+
+  /scan:
+    post:
+      tags: [benchmark]
+      summary: Scan a host's settings
+      description: Connects to a host over RHP4 and returns its current settings.
+      operationId: scanHost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanRequest"
+      responses:
+        "200":
+          description: The scanned host settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "500":
+          description: Failed to scan the host
+
+  /benchmark:
+    post:
+      tags: [benchmark]
+      summary: Benchmark a host
+      description: |
+        Forms a contract with the host, uploads the requested number of sectors,
+        then downloads them, measuring throughput and cost. This is a
+        long-running operation.
+      operationId: benchmarkHost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BenchmarkRequest"
+      responses:
+        "200":
+          description: The benchmark results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Result"
+        "500":
+          description: The benchmark failed
+
+  /wallet:
+    get:
+      tags: [wallet]
+      summary: Get wallet state
+      operationId: getWallet
+      responses:
+        "200":
+          description: The wallet address, scan height, and balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletResponse"
+
+  /wallet/events:
+    get:
+      tags: [wallet]
+      summary: List confirmed wallet events
+      operationId: getWalletEvents
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of events to return (defaults to 100, max 500)
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+        - name: offset
+          in: query
+          required: false
+          description: Number of events to skip
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: The wallet's confirmed events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Event"
+
+  /wallet/pending:
+    get:
+      tags: [wallet]
+      summary: List unconfirmed wallet events
+      operationId: getWalletPending
+      responses:
+        "200":
+          description: The wallet's unconfirmed events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Event"
+
+  /wallet/send:
+    post:
+      tags: [wallet]
+      summary: Send siacoins
+      operationId: sendSiacoins
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WalletSendSiacoinsRequest"
+      responses:
+        "200":
+          description: The ID of the broadcast transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionID"
+        "400":
+          description: Invalid request (e.g. void address or amount below the miner fee)
+        "500":
+          description: Failed to fund, sign, or broadcast the transaction
+
+components:
+  schemas:
+    Currency:
+      type: string
+      description: An amount of siacoins, in hastings (1 SC = 10^24 H).
+      example: "1000000000000000000000000"
+    Address:
+      type: string
+      description: A Sia address (76-character hex string).
+      example: "addr1234..."
+    PublicKey:
+      type: string
+      description: An ed25519 public key.
+      example: "ed25519:9aac1ffb1cfd1079a8c6c87b47da1d567e35b97234993c288c1ad0db1d1ce1b6"
+    Hash256:
+      type: string
+      description: A 256-bit hash encoded as a 64-character hex string.
+    TransactionID:
+      type: string
+      description: A transaction ID encoded as a 64-character hex string.
+    Duration:
+      type: integer
+      format: int64
+      description: A duration in nanoseconds.
+
+    ChainIndex:
+      type: object
+      properties:
+        height:
+          type: integer
+          format: int64
+        id:
+          $ref: "#/components/schemas/Hash256"
+      required: [height, id]
+
+    ConsensusState:
+      type: object
+      properties:
+        synced:
+          type: boolean
+        chainIndex:
+          $ref: "#/components/schemas/ChainIndex"
+      required: [synced, chainIndex]
+
+    Peer:
+      type: object
+      properties:
+        address:
+          type: string
+        version:
+          type: string
+        synced:
+          type: boolean
+      required: [address, version, synced]
+
+    SyncerConnectRequest:
+      type: object
+      properties:
+        address:
+          type: string
+          description: The network address of the peer to connect to.
+      required: [address]
+
+    ScanRequest:
+      type: object
+      properties:
+        address:
+          type: string
+          description: The host's RHP4 network address.
+        hostKey:
+          $ref: "#/components/schemas/PublicKey"
+      required: [address, hostKey]
+
+    BenchmarkRequest:
+      type: object
+      properties:
+        address:
+          type: string
+          description: The host's RHP4 network address.
+        hostKey:
+          $ref: "#/components/schemas/PublicKey"
+        sectors:
+          type: integer
+          format: int64
+          description: The number of sectors to upload and download.
+      required: [address, hostKey, sectors]
+
+    Settings:
+      type: object
+      description: The RHP4 settings scanned from a host.
+      properties:
+        settings:
+          type: object
+          description: |
+            The host's RHP4 settings (go.sia.tech/core/rhp/v4 HostSettings).
+            See the Sia core RHP4 documentation for the full structure.
+          additionalProperties: true
+      required: [settings]
+
+    Result:
+      type: object
+      description: The results of a host benchmark.
+      properties:
+        sectors:
+          type: integer
+          format: int64
+        handshake:
+          $ref: "#/components/schemas/Duration"
+        appendP99:
+          $ref: "#/components/schemas/Duration"
+        readP99:
+          $ref: "#/components/schemas/Duration"
+        upload:
+          $ref: "#/components/schemas/Duration"
+        download:
+          $ref: "#/components/schemas/Duration"
+        uploadCost:
+          $ref: "#/components/schemas/Currency"
+        downloadCost:
+          $ref: "#/components/schemas/Currency"
+      required:
+        - sectors
+        - handshake
+        - appendP99
+        - readP99
+        - upload
+        - download
+        - uploadCost
+        - downloadCost
+
+    WalletResponse:
+      type: object
+      properties:
+        scanHeight:
+          type: integer
+          format: int64
+        address:
+          $ref: "#/components/schemas/Address"
+        spendable:
+          $ref: "#/components/schemas/Currency"
+        confirmed:
+          $ref: "#/components/schemas/Currency"
+        unconfirmed:
+          $ref: "#/components/schemas/Currency"
+      required: [scanHeight, address, spendable, confirmed, unconfirmed]
+
+    WalletSendSiacoinsRequest:
+      type: object
+      properties:
+        address:
+          $ref: "#/components/schemas/Address"
+        amount:
+          $ref: "#/components/schemas/Currency"
+        subtractMinerFee:
+          type: boolean
+          description: If true, the miner fee is deducted from the amount sent.
+      required: [address, amount]
+
+    Event:
+      type: object
+      description: |
+        A wallet event (go.sia.tech/coreutils/wallet Event). See the Sia
+        coreutils wallet documentation for the full structure.
+      additionalProperties: true

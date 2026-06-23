@@ -67,9 +67,9 @@ func NewServer(g Syncer, chain ChainManager, bench Benchmark, wallet Wallet, log
 		bench:  bench,
 	}
 	return jape.Mux(map[string]jape.Handler{
-		// state endpoints
-		"GET /state/consensus": api.handleGETConsensusState,
-		// gateway endpoints
+		// consensus endpoints
+		"GET /consensus/tip": api.handleGETConsensusTip,
+		// syncer endpoints
 		"GET /syncer/address":           api.handleGETSyncerAddr,
 		"GET /syncer/peers":             api.handleGETSyncerPeers,
 		"PUT /syncer/peers":             api.handlePUTSyncerPeer,
@@ -78,9 +78,9 @@ func NewServer(g Syncer, chain ChainManager, bench Benchmark, wallet Wallet, log
 		"POST /scan":      api.handlePOSTScan,
 		"POST /benchmark": api.handlePOSTBenchmark,
 		// wallet endpoints
-		"GET /wallet":              api.handleGETWallet,
-		"GET /wallet/transactions": api.handleGETWalletTransactions,
-		"GET /wallet/pending":      api.handleGETWalletPending,
-		"POST /wallet/send":        api.handlePOSTWalletSend,
+		"GET /wallet":         api.handleGETWallet,
+		"GET /wallet/events":  api.handleGETWalletEvents,
+		"GET /wallet/pending": api.handleGETWalletPending,
+		"POST /wallet/send":   api.handlePOSTWalletSend,
 	})
 }
