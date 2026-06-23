@@ -6,6 +6,11 @@ on:
 permissions:
   contents: write
 
+# Serialize all runs so concurrent pushes can't race on the `:master` or release tags.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
