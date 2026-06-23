@@ -7,7 +7,6 @@ import (
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/jape"
-	"go.sia.tech/siad/modules"
 	"go.uber.org/zap"
 )
 
@@ -24,14 +23,21 @@ func (a *api) checkServerError(c jape.Context, context string, err error) bool {
 }
 
 func (a *api) handleGETConsensusState(c jape.Context) {
+	var synced bool
+	for _, peer := range a.syncer.Peers() {
+		if peer.Synced() {
+			synced = true
+			break
+		}
+	}
 	c.Encode(ConsensusState{
-		Synced:     a.chain.Synced(),
+		Synced:     synced,
 		ChainIndex: a.chain.TipState().Index,
 	})
 }
 
 func (a *api) handleGETSyncerAddr(c jape.Context) {
-	c.Encode(string(a.syncer.Address()))
+	c.Encode(a.syncer.Addr())
 }
 
 func (a *api) handleGETSyncerPeers(c jape.Context) {
@@ -39,8 +45,9 @@ func (a *api) handleGETSyncerPeers(c jape.Context) {
 	peers := make([]Peer, len(p))
 	for i, peer := range p {
 		peers[i] = Peer{
-			Address: string(peer.NetAddress),
-			Version: peer.Version,
+			Address: peer.Addr(),
+			Version: peer.Version(),
+			Synced:  peer.Synced(),
 		}
 	}
 	c.Encode(peers)
@@ -51,17 +58,22 @@ func (a *api) handlePUTSyncerPeer(c jape.Context) {
 	if err := c.Decode(&req); err != nil {
 		return
 	}
-	err := a.syncer.Connect(modules.NetAddress(req.Address))
+	_, err := a.syncer.Connect(c.Request.Context(), req.Address)
 	a.checkServerError(c, "failed to connect to peer", err)
 }
 
 func (a *api) handleDeleteSyncerPeer(c jape.Context) {
-	var addr modules.NetAddress
+	var addr string
 	if err := c.DecodeParam("address", &addr); err != nil {
 		return
 	}
-	err := a.syncer.Disconnect(addr)
-	a.checkServerError(c, "failed to disconnect from peer", err)
+	for _, peer := range a.syncer.Peers() {
+		if peer.Addr() == addr || peer.ConnAddr == addr {
+			a.checkServerError(c, "failed to disconnect from peer", peer.Close())
+			return
+		}
+	}
+	c.Error(fmt.Errorf("peer %q not connected", addr), http.StatusNotFound)
 }
 
 func (a *api) handlePOSTScan(c jape.Context) {
@@ -92,23 +104,27 @@ func (a *api) handlePOSTBenchmark(c jape.Context) {
 }
 
 func (a *api) handleGETWallet(c jape.Context) {
-	spendable, confirmed, unconfirmed, err := a.wallet.Balance()
+	balance, err := a.wallet.Balance()
 	if !a.checkServerError(c, "failed to get wallet", err) {
 		return
 	}
+	tip, err := a.wallet.Tip()
+	if !a.checkServerError(c, "failed to get wallet tip", err) {
+		return
+	}
 	c.Encode(WalletResponse{
-		ScanHeight:  a.wallet.ScanHeight(),
+		ScanHeight:  tip.Height,
 		Address:     a.wallet.Address(),
-		Spendable:   spendable,
-		Confirmed:   confirmed,
-		Unconfirmed: unconfirmed,
+		Spendable:   balance.Spendable,
+		Confirmed:   balance.Confirmed,
+		Unconfirmed: balance.Unconfirmed,
 	})
 }
 
 func (a *api) handleGETWalletTransactions(c jape.Context) {
 	limit, offset := parseLimitParams(c, 100, 500)
 
-	transactions, err := a.wallet.Transactions(limit, offset)
+	transactions, err := a.wallet.Events(offset, limit)
 	if !a.checkServerError(c, "failed to get wallet transactions", err) {
 		return
 	}
@@ -116,7 +132,7 @@ func (a *api) handleGETWalletTransactions(c jape.Context) {
 }
 
 func (a *api) handleGETWalletPending(c jape.Context) {
-	pending, err := a.wallet.UnconfirmedTransactions()
+	pending, err := a.wallet.UnconfirmedEvents()
 	if !a.checkServerError(c, "failed to get wallet pending", err) {
 		return
 	}
@@ -133,7 +149,7 @@ func (a *api) handlePOSTWalletSend(c jape.Context) {
 	}
 
 	// estimate miner fee
-	feePerByte := a.tpool.RecommendedFee()
+	feePerByte := a.wallet.RecommendedFee()
 	minerFee := feePerByte.Mul64(stdTxnSize)
 	if req.SubtractMinerFee {
 		var underflow bool
@@ -145,25 +161,27 @@ func (a *api) handlePOSTWalletSend(c jape.Context) {
 	}
 
 	// build transaction
-	txn := types.Transaction{
-		MinerFees: []types.Currency{minerFee},
+	txn := types.V2Transaction{
+		MinerFee: minerFee,
 		SiacoinOutputs: []types.SiacoinOutput{
 			{Address: req.Address, Value: req.Amount},
 		},
 	}
 	// fund and sign transaction
-	toSign, release, err := a.wallet.FundTransaction(&txn, req.Amount.Add(minerFee))
+	basis, toSign, err := a.wallet.FundV2Transaction(&txn, req.Amount.Add(minerFee), false)
 	if !a.checkServerError(c, "failed to fund transaction", err) {
 		return
 	}
-	defer release()
-	err = a.wallet.SignTransaction(a.chain.TipState(), &txn, toSign, types.CoveredFields{WholeTransaction: true})
-	if !a.checkServerError(c, "failed to sign transaction", err) {
+	a.wallet.SignV2Inputs(&txn, toSign)
+	basis, txnSet, err := a.chain.V2TransactionSet(basis, txn)
+	if !a.checkServerError(c, "failed to create transaction set", err) {
+		a.wallet.ReleaseInputs(nil, []types.V2Transaction{txn})
 		return
 	}
 	// broadcast transaction
-	err = a.tpool.AcceptTransactionSet([]types.Transaction{txn})
+	err = a.wallet.BroadcastV2TransactionSet(basis, txnSet)
 	if !a.checkServerError(c, "failed to broadcast transaction", err) {
+		a.wallet.ReleaseInputs(nil, []types.V2Transaction{txn})
 		return
 	}
 	c.Encode(txn.ID())

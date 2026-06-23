@@ -31,12 +31,13 @@ func (s *Store) init() error {
 		}
 		logger := s.log.Named("migrations")
 		logger.Debug("migrating database", zap.Int64("current", version), zap.Int64("target", targetVersion))
-		for _, fn := range migrations[version-1 : targetVersion] {
-			version++
+		for version < targetVersion {
+			fn := migrations[version-1]
 			start := time.Now()
 			if err := fn(tx); err != nil {
-				return fmt.Errorf("failed to migrate database to version %v: %w", version, err)
+				return fmt.Errorf("failed to migrate database to version %v: %w", version+1, err)
 			}
+			version++
 			logger.Debug("migration complete", zap.Int64("current", version), zap.Int64("target", targetVersion), zap.Duration("elapsed", time.Since(start)))
 		}
 		return setDBVersion(tx, targetVersion)

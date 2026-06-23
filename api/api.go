@@ -6,32 +6,25 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/syncer"
+	"go.sia.tech/coreutils/wallet"
 	"go.sia.tech/host-bench/benchmark"
-	"go.sia.tech/hostd/wallet"
 	"go.sia.tech/jape"
-	"go.sia.tech/siad/modules"
 	"go.uber.org/zap"
 )
 
 type (
 	// A Syncer can connect to other peers and synchronize the blockchain.
 	Syncer interface {
-		Address() modules.NetAddress
-		Peers() []modules.Peer
-		Connect(addr modules.NetAddress) error
-		Disconnect(addr modules.NetAddress) error
-	}
-
-	// A TPool manages the transaction pool
-	TPool interface {
-		RecommendedFee() (fee types.Currency)
-		AcceptTransactionSet(txns []types.Transaction) error
+		Addr() string
+		Peers() []*syncer.Peer
+		Connect(ctx context.Context, addr string) (*syncer.Peer, error)
 	}
 
 	// A ChainManager retrieves the current blockchain state
 	ChainManager interface {
-		Synced() bool
 		TipState() consensus.State
+		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	}
 
 	// A Benchmark benchmarks hosts and manages contracts
@@ -43,12 +36,15 @@ type (
 	// A Wallet manages Siacoins and funds transactions
 	Wallet interface {
 		Address() types.Address
-		ScanHeight() uint64
-		Balance() (spendable, confirmed, unconfirmed types.Currency, err error)
-		UnconfirmedTransactions() ([]wallet.Transaction, error)
-		FundTransaction(txn *types.Transaction, amount types.Currency) (toSign []types.Hash256, release func(), err error)
-		SignTransaction(cs consensus.State, txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) error
-		Transactions(limit, offset int) ([]wallet.Transaction, error)
+		Tip() (types.ChainIndex, error)
+		Balance() (wallet.Balance, error)
+		Events(offset, limit int) ([]wallet.Event, error)
+		UnconfirmedEvents() ([]wallet.Event, error)
+		FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error)
+		SignV2Inputs(txn *types.V2Transaction, toSign []int)
+		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
+		BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error
+		RecommendedFee() types.Currency
 	}
 
 	api struct {
@@ -56,19 +52,17 @@ type (
 
 		syncer Syncer
 		chain  ChainManager
-		tpool  TPool
 		bench  Benchmark
 		wallet Wallet
 	}
 )
 
 // NewServer initializes the API
-func NewServer(g Syncer, chain ChainManager, tp TPool, bench Benchmark, wallet Wallet, log *zap.Logger) http.Handler {
+func NewServer(g Syncer, chain ChainManager, bench Benchmark, wallet Wallet, log *zap.Logger) http.Handler {
 	api := &api{
 		log:    log,
 		syncer: g,
 		chain:  chain,
-		tpool:  tp,
 		wallet: wallet,
 		bench:  bench,
 	}

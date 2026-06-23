@@ -1,18 +1,18 @@
 package benchmark
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"sort"
 	"time"
 
 	"go.sia.tech/core/consensus"
-	rhp2 "go.sia.tech/core/rhp/v2"
-	rhp3 "go.sia.tech/core/rhp/v3"
+	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
-	proto2 "go.sia.tech/host-bench/rhp/v2"
-	proto3 "go.sia.tech/host-bench/rhp/v3"
+	rhp4 "go.sia.tech/coreutils/rhp/v4"
+	"go.sia.tech/coreutils/rhp/v4/siamux"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
@@ -20,36 +20,32 @@ import (
 type (
 	// A ChainManager provides access to the current consensus state.
 	ChainManager interface {
-		// TipState returns the current consensus state.
 		TipState() consensus.State
+		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	}
 
-	// A Wallet funds and signs transactions
+	// A Wallet funds and signs v2 transactions.
 	Wallet interface {
 		Address() types.Address
-		FundTransaction(txn *types.Transaction, amount types.Currency) ([]types.Hash256, func(), error)
-		SignTransaction(cs consensus.State, txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) error
-	}
-
-	// A TPool manages transactions
-	TPool interface {
+		FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error)
+		BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error
 		RecommendedFee() types.Currency
+		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
+		SignV2Inputs(txn *types.V2Transaction, toSign []int)
 	}
 
-	// A Manager performs benchmarks and manages contracts
+	// A Manager performs benchmarks and manages contracts.
 	Manager struct {
 		privKey types.PrivateKey
 
 		log    *zap.Logger
 		chain  ChainManager
-		tpool  TPool
 		wallet Wallet
 	}
 
-	// Settings contains the settings scanned from a host.
+	// Settings contains the RHP4 settings scanned from a host.
 	Settings struct {
-		Settings   rhp2.HostSettings   `json:"settings"`
-		PriceTable rhp3.HostPriceTable `json:"priceTable"`
+		Settings proto4.HostSettings `json:"settings"`
 	}
 
 	// A Result contains the results of a benchmark.
@@ -62,14 +58,19 @@ type (
 		Download     time.Duration  `json:"download"`
 		UploadCost   types.Currency `json:"uploadCost"`
 		DownloadCost types.Currency `json:"downloadCost"`
-		Error        error          `json:"error,omitempty"`
+	}
+
+	formContractSigner struct {
+		privKey types.PrivateKey
+		wallet  Wallet
 	}
 
 	uploadResult struct {
-		Roots   []types.Hash256
-		Cost    types.Currency
-		Elapsed time.Duration
-		P99     time.Duration
+		Roots    []types.Hash256
+		Cost     types.Currency
+		Revision types.V2FileContract
+		Elapsed  time.Duration
+		P99      time.Duration
 	}
 
 	downloadResult struct {
@@ -80,211 +81,178 @@ type (
 	}
 )
 
-// downloadBenchmark benchmarks the host's download performance.
-func (m *Manager) downloadBenchmark(session *proto3.Session, pt rhp3.HostPriceTable, revision *rhp2.ContractRevision, roots []types.Hash256) (result downloadResult, _ error) {
-	budget, _ := pt.ReadSectorCost(rhp2.SectorSize).Add(pt.BaseCost()).Total()
-	budget = budget.Mul64(125).Div64(100)
-	account := rhp3.Account(m.privKey.PublicKey())
+func (s formContractSigner) FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error) {
+	return s.wallet.FundV2Transaction(txn, amount, false)
+}
 
-	payment := proto3.ContractPayment(revision, m.privKey, rhp3.ZeroAccount)
-	totalCost := budget.Mul64(uint64(len(roots)))
-	balance, err := session.FundAccount(account, payment, totalCost)
-	if err != nil {
-		return downloadResult{}, fmt.Errorf("failed to fund account: %w", err)
-	}
-	m.log.Debug("funded account", zap.Stringer("balance", balance))
+func (s formContractSigner) RecommendedFee() types.Currency {
+	return s.wallet.RecommendedFee()
+}
 
-	payment = proto3.AccountPayment(account, m.privKey)
-	var readTimes []time.Duration
-	for _, root := range roots {
-		elapsed, cost, err := downloadSector(session, pt, revision, root, m.privKey, budget, payment)
-		if err != nil {
-			return downloadResult{}, fmt.Errorf("failed to download sector %v: %w", root, err)
-		}
-		m.log.Debug("downloaded sector", zap.Duration("elapsed", elapsed), zap.String("cost", cost.String()))
-		readTimes = append(readTimes, elapsed)
-		result.Elapsed += elapsed
-		result.Cost = result.Cost.Add(cost)
-		result.Sectors++
+func (s formContractSigner) ReleaseInputs(txns []types.V2Transaction) {
+	s.wallet.ReleaseInputs(nil, txns)
+}
+
+func (s formContractSigner) SignHash(h types.Hash256) types.Signature {
+	return s.privKey.SignHash(h)
+}
+
+func (s formContractSigner) SignV2Inputs(txn *types.V2Transaction, toSign []int) {
+	s.wallet.SignV2Inputs(txn, toSign)
+}
+
+func dialRHP4(ctx context.Context, hostAddr string, hostKey types.PublicKey) (rhp4.TransportClient, time.Duration, error) {
+	start := time.Now()
+	transport, err := siamux.Dial(ctx, hostAddr, hostKey)
+	return transport, time.Since(start), err
+}
+
+func contractDuration(currentHeight uint64, prices proto4.HostPrices, settings proto4.HostSettings) (duration, proofHeight, priceDuration uint64, err error) {
+	duration = max(300, proto4.MinContractDuration)
+	if settings.MaxContractDuration != 0 && duration > settings.MaxContractDuration {
+		duration = settings.MaxContractDuration
 	}
-	// calculate the p99 append time
-	sort.SliceStable(readTimes, func(i, j int) bool {
-		return readTimes[i] < readTimes[j]
-	})
-	result.P99 = readTimes[len(readTimes)*99/100]
+	if duration < proto4.MinContractDuration {
+		return 0, 0, 0, fmt.Errorf("host max contract duration %d is less than minimum %d", settings.MaxContractDuration, uint64(proto4.MinContractDuration))
+	}
+	proofHeight = currentHeight + duration
+	if proofHeight <= prices.TipHeight {
+		priceDuration = duration
+	} else {
+		priceDuration = proofHeight - prices.TipHeight
+	}
 	return
 }
 
-// uploadBenchmark benchmarks the host's upload performance.
-func (m *Manager) uploadBenchmark(session *proto3.Session, pt rhp3.HostPriceTable, revision *rhp2.ContractRevision, sectors uint64) (result uploadResult, _ error) {
-	usage := pt.AppendSectorCost(revision.Revision.WindowEnd - pt.HostBlockHeight)
-	budget, _ := usage.Add(pt.BaseCost()).Total()
-	budget = budget.Mul64(125).Div64(100)
-	account := rhp3.Account(m.privKey.PublicKey())
+func benchmarkCosts(prices proto4.HostPrices, sectors, duration uint64) (writeUsage, appendUsage, readUsage proto4.Usage, accountFundAmount, renterAllowance, hostCollateral types.Currency) {
+	writeUsage = prices.RPCWriteSectorCost(proto4.SectorSize).Mul(sectors)
+	appendUsage = prices.RPCAppendSectorsCost(sectors, duration)
+	readUsage = prices.RPCReadSectorCost(proto4.SectorSize).Mul(sectors)
 
-	payment := proto3.ContractPayment(revision, m.privKey, rhp3.ZeroAccount)
-
-	totalCost := budget.Mul64(sectors)
-	balance, err := session.FundAccount(account, payment, totalCost)
-	if err != nil {
-		return uploadResult{}, fmt.Errorf("failed to fund account: %w", err)
-	}
-	m.log.Debug("funded account", zap.Stringer("balance", balance))
-
-	payment = proto3.AccountPayment(account, m.privKey)
-	var appendTimes []time.Duration
-	for i := uint64(0); i < sectors; i++ {
-		root, elapsed, cost, err := appendRandomSector(session, pt, revision, m.privKey, budget, payment)
-		if err != nil {
-			return uploadResult{}, fmt.Errorf("failed to upload sector %d: %w", i, err)
-		}
-		m.log.Debug("uploaded sector", zap.Duration("elapsed", elapsed), zap.String("cost", cost.String()))
-		appendTimes = append(appendTimes, elapsed)
-		result.Elapsed += elapsed
-		result.Cost = result.Cost.Add(cost)
-		result.Roots = append(result.Roots, root)
-	}
-	// calculate the p99 append time
-	sort.SliceStable(appendTimes, func(i, j int) bool {
-		return appendTimes[i] < appendTimes[j]
-	})
-	result.P99 = appendTimes[len(appendTimes)*99/100]
+	accountFundAmount = writeUsage.RenterCost().Add(readUsage.RenterCost()).Mul64(125).Div64(100)
+	renterAllowance = accountFundAmount.Add(appendUsage.RenterCost()).Mul64(125).Div64(100)
+	hostCollateral = appendUsage.HostRiskedCollateral()
 	return
 }
 
-// ScanHost scans the host at the given address and returns the settings.
+// ScanHost scans the host at the given address and returns the RHP4 settings.
 func (m *Manager) ScanHost(ctx context.Context, hostAddr string, hostKey types.PublicKey) (Settings, error) {
 	log := m.log.Named("scan").With(zap.String("host", hostAddr), zap.Stringer("hostKey", hostKey))
-	// start the RHP2 session
-	log.Debug("opening RHP2 session")
-	rhp2Session, err := proto2.NewSession(ctx, hostKey, hostAddr, m.chain, m.tpool, m.wallet)
+	log.Debug("opening RHP4 siamux transport")
+	transport, _, err := dialRHP4(ctx, hostAddr, hostKey)
 	if err != nil {
-		return Settings{}, fmt.Errorf("failed to create session: %w", err)
+		return Settings{}, fmt.Errorf("failed to connect to host: %w", err)
 	}
-	defer rhp2Session.Close()
+	defer transport.Close()
 
-	// scan the settings
-	log.Debug("scanning settings")
-	settings, err := rhp2Session.ScanSettings()
+	log.Debug("scanning RHP4 settings")
+	settings, err := rhp4.RPCSettings(ctx, transport)
 	if err != nil {
 		return Settings{}, fmt.Errorf("failed to scan settings: %w", err)
 	}
-
-	log.Debug("starting RHP3 session")
-
-	// start the RHP3 session
-	host, _, err := net.SplitHostPort(hostAddr)
-	if err != nil {
-		return Settings{}, fmt.Errorf("failed to split host and port: %w", err)
-	}
-	rhp3Addr := net.JoinHostPort(host, settings.SiaMuxPort)
-	rhp3Session, err := proto3.NewSession(ctx, hostKey, rhp3Addr, m.chain, m.wallet)
-	if err != nil {
-		return Settings{}, fmt.Errorf("failed to create session: %w", err)
-	}
-	defer rhp3Session.Close()
-
-	// scan the price table
-	log.Debug("scanning price table")
-	pt, err := rhp3Session.ScanPriceTable()
-	if err != nil {
-		return Settings{}, fmt.Errorf("failed to scan price table: %w", err)
-	}
-	log.Debug("got price table", zap.Stringer("storagePrice", pt.WriteStoreCost), zap.Stringer("ingressPrice", pt.UploadBandwidthCost), zap.Stringer("egressPrice", pt.DownloadBandwidthCost))
-
-	return Settings{
-		Settings:   settings,
-		PriceTable: pt,
-	}, nil
+	log.Debug("got RHP4 settings",
+		zap.String("release", settings.Release),
+		zap.Uint64("tipHeight", settings.Prices.TipHeight),
+		zap.Stringer("storagePrice", settings.Prices.StoragePrice),
+		zap.Stringer("ingressPrice", settings.Prices.IngressPrice),
+		zap.Stringer("egressPrice", settings.Prices.EgressPrice))
+	return Settings{Settings: settings}, nil
 }
 
 // BenchmarkHost benchmarks the host uploading and downloading the specified
 // number of sectors.
 func (m *Manager) BenchmarkHost(ctx context.Context, hostAddr string, hostKey types.PublicKey, sectors uint64) (res Result, _ error) {
-	log := m.log.Named("benchmark").With(zap.String("host", hostAddr), zap.Uint64("sectors", sectors), zap.Stringer("hostKey", hostKey))
-	log.Debug("opening RHP2 session")
-	rhp2Session, err := proto2.NewSession(ctx, hostKey, hostAddr, m.chain, m.tpool, m.wallet)
-	if err != nil {
-		return Result{}, fmt.Errorf("failed to create session: %w", err)
+	if sectors == 0 {
+		return Result{}, errors.New("sectors must be greater than zero")
 	}
-	defer rhp2Session.Close()
 
-	log.Debug("scanning settings")
+	log := m.log.Named("benchmark").With(zap.String("host", hostAddr), zap.Uint64("sectors", sectors), zap.Stringer("hostKey", hostKey))
+	log.Debug("opening RHP4 siamux transport")
+	transport, handshake, err := dialRHP4(ctx, hostAddr, hostKey)
+	if err != nil {
+		return Result{}, fmt.Errorf("failed to connect to host: %w", err)
+	}
+	res.Handshake = handshake
+	defer transport.Close()
 
-	settings, err := rhp2Session.ScanSettings()
+	log.Debug("scanning RHP4 settings")
+	settings, err := rhp4.RPCSettings(ctx, transport)
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to scan settings: %w", err)
+	} else if !settings.AcceptingContracts {
+		return Result{}, fmt.Errorf("host is not accepting contracts")
+	} else if settings.RemainingStorage < sectors {
+		return Result{}, fmt.Errorf("host has insufficient storage: %d < %d sectors", settings.RemainingStorage, sectors)
+	}
+	prices := settings.Prices
+	log.Debug("got RHP4 settings", zap.String("release", settings.Release), zap.Uint64("tipHeight", prices.TipHeight))
+
+	cs := m.chain.TipState()
+	currentHeight := cs.Index.Height
+	if currentHeight > 6 && prices.TipHeight+6 < currentHeight {
+		return Result{}, fmt.Errorf("host is not synced: %d < %d", prices.TipHeight, currentHeight)
 	}
 
-	log.Debug("starting RHP3 session")
-
-	// start the RHP3 session
-	handshakeStart := time.Now()
-	host, _, err := net.SplitHostPort(hostAddr)
+	duration, proofHeight, priceDuration, err := contractDuration(currentHeight, prices, settings)
 	if err != nil {
-		return Result{}, fmt.Errorf("failed to split host and port: %w", err)
+		return Result{}, err
 	}
-	rhp3Addr := net.JoinHostPort(host, settings.SiaMuxPort)
-	rhp3Session, err := proto3.NewSession(ctx, hostKey, rhp3Addr, m.chain, m.wallet)
-	if err != nil {
-		return Result{}, fmt.Errorf("failed to create session: %w", err)
+	writeUsage, appendUsage, readUsage, accountFundAmount, renterAllowance, hostCollateral := benchmarkCosts(prices, sectors, priceDuration)
+	if hostCollateral.Cmp(settings.MaxCollateral) > 0 {
+		return Result{}, fmt.Errorf("host collateral exceeds maximum: %s > %s", hostCollateral, settings.MaxCollateral)
 	}
-	res.Handshake = time.Since(handshakeStart)
-	defer rhp3Session.Close()
+	log.Debug("calculated costs",
+		zap.Stringer("accountFunding", accountFundAmount),
+		zap.Stringer("renterAllowance", renterAllowance),
+		zap.Stringer("hostCollateral", hostCollateral),
+		zap.Stringer("writeCost", writeUsage.RenterCost()),
+		zap.Stringer("appendCost", appendUsage.RenterCost()),
+		zap.Stringer("readCost", readUsage.RenterCost()),
+		zap.Uint64("duration", duration),
+		zap.Uint64("proofHeight", proofHeight))
 
-	log.Debug("scanning price table")
-
-	pt, err := rhp3Session.ScanPriceTable()
-	if err != nil {
-		return Result{}, fmt.Errorf("failed to scan price table: %w", err)
-	}
-	log.Debug("got price table", zap.Stringer("storagePrice", pt.WriteStoreCost), zap.Stringer("ingressPrice", pt.UploadBandwidthCost), zap.Stringer("egressPrice", pt.DownloadBandwidthCost))
-
-	currentHeight := m.chain.TipState().Index.Height
-	if pt.HostBlockHeight < currentHeight-6 {
-		return Result{}, fmt.Errorf("host is not synced: %d < %d", pt.HostBlockHeight, currentHeight)
-	}
-
-	duration := uint64(300)
-	uploadCost, hostCollateral := pt.AppendSectorCost(duration).Add(pt.BaseCost()).Total()
-	downloadCost, _ := pt.ReadSectorCost(rhp2.SectorSize).Add(pt.BaseCost()).Total()
-	log.Debug("calculated costs", zap.Stringer("uploadCost", uploadCost), zap.Stringer("hostCollateral", hostCollateral), zap.Stringer("downloadCost", downloadCost), zap.Uint64("duration", duration))
-
-	uploadCost = uploadCost.Mul64(sectors)
-	hostCollateral = hostCollateral.Mul64(sectors)
-	downloadCost = downloadCost.Mul64(sectors)
-	renterPayout := uploadCost.Add(downloadCost).Mul64(2)
-
-	log.Debug("forming contract", zap.Stringer("hostCollateral", hostCollateral), zap.Stringer("renterPayout", renterPayout))
-
-	contract, _, err := rhp2Session.FormContract(settings.Address, m.privKey, renterPayout, hostCollateral, currentHeight+duration)
+	signer := formContractSigner{privKey: m.privKey, wallet: m.wallet}
+	log.Debug("forming RHP4 contract")
+	form, err := rhp4.RPCFormContract(ctx, transport, m.chain, signer, cs, prices, hostKey, settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: m.privKey.PublicKey(),
+		RenterAddress:   m.wallet.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     proofHeight,
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to form contract: %w", err)
 	}
+	if err := m.wallet.BroadcastV2TransactionSet(form.FormationSet.Basis, form.FormationSet.Transactions); err != nil {
+		signer.ReleaseInputs(form.FormationSet.Transactions)
+		return Result{}, fmt.Errorf("failed to broadcast formation set: %w", err)
+	}
+	contract := form.Contract
+	log.Info("formed contract", zap.Stringer("contractID", contract.ID), zap.Uint64("expiration", contract.Revision.ExpirationHeight), zap.Stringer("renterAllowance", renterAllowance), zap.Stringer("hostCollateral", hostCollateral))
 
-	log.Info("formed contract", zap.String("contractID", contract.ID().String()), zap.Uint64("expiration", currentHeight+duration), zap.String("renterPayout", renterPayout.String()), zap.String("hostCollateral", hostCollateral.String()))
-
-	account := rhp3.Account(m.privKey.PublicKey())
-	payment := proto3.ContractPayment(&contract, m.privKey, account)
-
-	// register a price table
-	pt, err = rhp3Session.RegisterPriceTable(payment)
-	if err != nil {
-		return Result{}, fmt.Errorf("failed to register price table: %w", err)
+	if !accountFundAmount.IsZero() {
+		account := proto4.Account(m.privKey.PublicKey())
+		fund, err := rhp4.RPCFundAccounts(ctx, transport, cs, m.privKey, contract, []proto4.AccountDeposit{
+			{Account: account, Amount: accountFundAmount},
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("failed to fund RHP4 account: %w", err)
+		}
+		contract.Revision = fund.Revision
+		log.Debug("funded RHP4 account", zap.Stringer("account", types.PublicKey(account)), zap.Stringer("amount", accountFundAmount))
 	}
 
-	// upload the sectors
-	uploadResult, err := m.uploadBenchmark(rhp3Session, pt, &contract, sectors)
+	uploadResult, err := m.uploadBenchmark(ctx, transport, prices, contract, hostKey, sectors)
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to upload sectors: %w", err)
 	}
+	contract.Revision = uploadResult.Revision
 	res.Upload = uploadResult.Elapsed
 	res.AppendP99 = uploadResult.P99
 	res.UploadCost = uploadResult.Cost
 	log.Info("upload benchmark complete", zap.Duration("elapsed", uploadResult.Elapsed), zap.Duration("p99", uploadResult.P99), zap.Stringer("cost", uploadResult.Cost))
 
-	// download the sectors
-	downloadResult, err := m.downloadBenchmark(rhp3Session, pt, &contract, uploadResult.Roots)
+	downloadResult, err := m.downloadBenchmark(ctx, transport, prices, hostKey, uploadResult.Roots)
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to download sectors: %w", err)
 	}
@@ -293,43 +261,99 @@ func (m *Manager) BenchmarkHost(ctx context.Context, hostAddr string, hostKey ty
 	res.DownloadCost = downloadResult.Cost
 	res.Sectors = sectors
 	log.Info("download benchmark complete", zap.Duration("elapsed", downloadResult.Elapsed), zap.Duration("p99", downloadResult.P99), zap.Stringer("cost", downloadResult.Cost))
+	return res, nil
+}
+
+func (m *Manager) uploadBenchmark(ctx context.Context, transport rhp4.TransportClient, prices proto4.HostPrices, contract rhp4.ContractRevision, hostKey types.PublicKey, sectors uint64) (result uploadResult, _ error) {
+	token := proto4.NewAccountToken(m.privKey, hostKey)
+
+	var appendTimes []time.Duration
+	for i := range sectors {
+		root, revision, elapsed, cost, err := m.uploadRandomSector(ctx, transport, prices, contract, token)
+		if err != nil {
+			return uploadResult{}, fmt.Errorf("failed to upload sector %d: %w", i, err)
+		}
+		contract.Revision = revision
+		appendTimes = append(appendTimes, elapsed)
+		result.Elapsed += elapsed
+		result.Cost = result.Cost.Add(cost)
+		result.Roots = append(result.Roots, root)
+		m.log.Debug("uploaded sector", zap.Uint64("sector", i), zap.Duration("elapsed", elapsed), zap.Stringer("cost", cost))
+	}
+	sort.SliceStable(appendTimes, func(i, j int) bool {
+		return appendTimes[i] < appendTimes[j]
+	})
+	result.P99 = appendTimes[len(appendTimes)*99/100]
+	result.Revision = contract.Revision
 	return
 }
 
-func appendRandomSector(session *proto3.Session, pt rhp3.HostPriceTable, revision *rhp2.ContractRevision, renterKey types.PrivateKey, budget types.Currency, payment proto3.PaymentMethod) (types.Hash256, time.Duration, types.Currency, error) {
-	var sector [rhp2.SectorSize]byte
-	frand.Read(sector[:256])
+func (m *Manager) uploadRandomSector(ctx context.Context, transport rhp4.TransportClient, prices proto4.HostPrices, contract rhp4.ContractRevision, token proto4.AccountToken) (types.Hash256, types.V2FileContract, time.Duration, types.Currency, error) {
+	var sector [proto4.SectorSize]byte
+	frand.Read(sector[:])
 
 	rpcStart := time.Now()
-	cost, err := session.AppendSector(&sector, revision, renterKey, payment, budget)
+	write, err := rhp4.RPCWriteSector(ctx, transport, prices, token, bytes.NewReader(sector[:]), proto4.SectorSize)
 	if err != nil {
-		return types.Hash256{}, 0, types.ZeroCurrency, fmt.Errorf("failed to append sector: %w", err)
+		return types.Hash256{}, types.V2FileContract{}, 0, types.ZeroCurrency, fmt.Errorf("failed to write sector: %w", err)
+	} else if write.Root != proto4.SectorRoot(&sector) {
+		return types.Hash256{}, types.V2FileContract{}, 0, types.ZeroCurrency, fmt.Errorf("write sector returned wrong root")
+	}
+	appendResult, err := rhp4.RPCAppendSectors(ctx, transport, m.privKey, m.chain.TipState(), prices, contract, []types.Hash256{write.Root})
+	if err != nil {
+		return types.Hash256{}, types.V2FileContract{}, 0, types.ZeroCurrency, fmt.Errorf("failed to append sector: %w", err)
 	}
 	elapsed := time.Since(rpcStart)
-	return rhp2.SectorRoot(&sector), elapsed, cost, nil
+	cost := write.Usage.RenterCost().Add(appendResult.Usage.RenterCost())
+	return write.Root, appendResult.Revision, elapsed, cost, nil
 }
 
-func downloadSector(session *proto3.Session, pt rhp3.HostPriceTable, revision *rhp2.ContractRevision, root types.Hash256, renterKey types.PrivateKey, budget types.Currency, payment proto3.PaymentMethod) (time.Duration, types.Currency, error) {
+func (m *Manager) downloadBenchmark(ctx context.Context, transport rhp4.TransportClient, prices proto4.HostPrices, hostKey types.PublicKey, roots []types.Hash256) (result downloadResult, _ error) {
+	token := proto4.NewAccountToken(m.privKey, hostKey)
+
+	var readTimes []time.Duration
+	for _, root := range roots {
+		elapsed, cost, err := downloadSector(ctx, transport, prices, token, root)
+		if err != nil {
+			return downloadResult{}, fmt.Errorf("failed to download sector %v: %w", root, err)
+		}
+		readTimes = append(readTimes, elapsed)
+		result.Elapsed += elapsed
+		result.Cost = result.Cost.Add(cost)
+		result.Sectors++
+		m.log.Debug("downloaded sector", zap.Duration("elapsed", elapsed), zap.Stringer("cost", cost))
+	}
+	sort.SliceStable(readTimes, func(i, j int) bool {
+		return readTimes[i] < readTimes[j]
+	})
+	result.P99 = readTimes[len(readTimes)*99/100]
+	return
+}
+
+func downloadSector(ctx context.Context, transport rhp4.TransportClient, prices proto4.HostPrices, token proto4.AccountToken, root types.Hash256) (time.Duration, types.Currency, error) {
+	var buf bytes.Buffer
 	rpcStart := time.Now()
-	buf, cost, err := session.ReadSector(root, 0, rhp2.SectorSize, payment, budget)
+	read, err := rhp4.RPCReadSector(ctx, transport, prices, token, &buf, root, 0, proto4.SectorSize)
 	if err != nil {
 		return 0, types.ZeroCurrency, fmt.Errorf("failed to read sector: %w", err)
 	}
 	elapsed := time.Since(rpcStart)
-	if len(buf) != rhp2.SectorSize {
-		return 0, types.ZeroCurrency, fmt.Errorf("read %d bytes instead of %d", len(buf), rhp2.SectorSize)
-	} else if rhp2.SectorRoot((*[rhp2.SectorSize]byte)(buf)) != root {
+	if buf.Len() != proto4.SectorSize {
+		return 0, types.ZeroCurrency, fmt.Errorf("read %d bytes instead of %d", buf.Len(), proto4.SectorSize)
+	}
+	var sector [proto4.SectorSize]byte
+	copy(sector[:], buf.Bytes())
+	if proto4.SectorRoot(&sector) != root {
 		return 0, types.ZeroCurrency, fmt.Errorf("read sector has wrong root")
 	}
-	return elapsed, cost, nil
+	return elapsed, read.Usage.RenterCost(), nil
 }
 
 // New creates a new benchmark manager.
-func New(privKey types.PrivateKey, cm ChainManager, tp TPool, w Wallet, log *zap.Logger) *Manager {
+func New(privKey types.PrivateKey, cm ChainManager, w Wallet, log *zap.Logger) *Manager {
 	return &Manager{
 		privKey: privKey,
 		chain:   cm,
-		tpool:   tp,
 		wallet:  w,
 		log:     log,
 	}

@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // import sqlite3 driver
@@ -40,11 +39,6 @@ type (
 		// Scan will return ErrNoRows. Otherwise, the *Row's Scan scans the
 		// first selected row and discards the rest.
 		QueryRow(query string, args ...any) *loggedRow
-	}
-
-	// A dbTxn wraps a Store and implements the txn interface.
-	dbTxn struct {
-		store *Store
 	}
 
 	loggedStmt struct {
@@ -188,61 +182,6 @@ func (lt *loggedTxn) QueryRow(query string, args ...any) *loggedRow {
 		lt.log.Debug("slow query row", zap.String("query", query), zap.Duration("elapsed", dur), zap.Stack("stack"))
 	}
 	return &loggedRow{row, lt.log.Named("row")}
-}
-
-// Exec executes a query without returning any rows. The args are for
-// any placeholder parameters in the query.
-func (dt *dbTxn) Exec(query string, args ...any) (sql.Result, error) {
-	return dt.store.exec(query, args...)
-}
-
-// Prepare creates a prepared statement for later queries or executions.
-// Multiple queries or executions may be run concurrently from the
-// returned statement. The caller must call the statement's Close method
-// when the statement is no longer needed.
-func (dt *dbTxn) Prepare(query string) (*loggedStmt, error) {
-	return dt.store.prepare(query)
-}
-
-// Query executes a query that returns rows, typically a SELECT. The
-// args are for any placeholder parameters in the query.
-func (dt *dbTxn) Query(query string, args ...any) (*loggedRows, error) {
-	return dt.store.query(query, args...)
-}
-
-// QueryRow executes a query that is expected to return at most one row.
-// QueryRow always returns a non-nil value. Errors are deferred until
-// Row's Scan method is called. If the query selects no rows, the *Row's
-// Scan will return ErrNoRows. Otherwise, the *Row's Scan scans the
-// first selected row and discards the rest.
-func (dt *dbTxn) QueryRow(query string, args ...any) *loggedRow {
-	return dt.store.queryRow(query, args...)
-}
-
-func queryPlaceHolders(n int) string {
-	if n == 0 {
-		return ""
-	} else if n == 1 {
-		return "?"
-	}
-	var b strings.Builder
-	b.Grow(((n - 1) * 2) + 1) // ?,?
-	for i := 0; i < n-1; i++ {
-		b.WriteString("?,")
-	}
-	b.WriteString("?")
-	return b.String()
-}
-
-func queryArgs[T any](args []T) []any {
-	if len(args) == 0 {
-		return nil
-	}
-	out := make([]any, len(args))
-	for i, arg := range args {
-		out[i] = arg
-	}
-	return out
 }
 
 // getDBVersion returns the current version of the database.
