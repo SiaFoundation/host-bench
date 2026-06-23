@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"syscall"
 
 	"go.sia.tech/core/types"
@@ -28,15 +27,9 @@ benchyd [flags] [command]
 Run 'benchyd' with no command to start the benchmarking daemon.
 
 Commands:
-	version		Print the benchyd version
 	seed		Generate a new wallet seed and print the corresponding address
 	config		Interactively configure benchyd
 `
-
-	versionUsage = `Usage:
-benchyd version
-
-Print the version of benchyd.`
 
 	seedUsage = `Usage:
 benchyd seed
@@ -214,14 +207,12 @@ func main() {
 
 	seedCmd := flagg.New("seed", seedUsage)
 	configCmd := flagg.New("config", configUsage)
-	versionCmd := flagg.New("version", versionUsage)
 
 	cmd := flagg.Parse(flagg.Tree{
 		Cmd: rootCmd,
 		Sub: []flagg.Tree{
 			{Cmd: seedCmd},
 			{Cmd: configCmd},
-			{Cmd: versionCmd},
 		},
 	})
 
@@ -234,16 +225,6 @@ func main() {
 	}
 
 	switch cmd {
-	case versionCmd:
-		if len(cmd.Args()) != 0 {
-			cmd.Usage()
-			return
-		}
-
-		commit, modified, buildTime := buildInfo()
-		fmt.Println("benchyd")
-		fmt.Println("Commit:", commit, map[bool]string{true: "(modified)", false: ""}[modified])
-		fmt.Println("Build Date:", buildTime)
 	case seedCmd:
 		if len(cmd.Args()) != 0 {
 			cmd.Usage()
@@ -291,22 +272,4 @@ func main() {
 
 		checkFatalError("daemon startup failed", runNode(ctx, cfg, renterKey, instantSync, log))
 	}
-}
-
-func buildInfo() (commit string, modified bool, buildTime string) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return
-	}
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			commit = s.Value
-		case "vcs.modified":
-			modified = s.Value == "true"
-		case "vcs.time":
-			buildTime = s.Value
-		}
-	}
-	return
 }
