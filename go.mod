@@ -1,4 +1,4 @@
-module go.sia.tech/host-bench
+module go.sia.tech/host-bench // v0.2.0
 
 go 1.26.0
 
