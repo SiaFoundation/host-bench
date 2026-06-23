@@ -20,6 +20,7 @@ type (
 	Peer struct {
 		Address string `json:"address"`
 		Version string `json:"version"`
+		Synced  bool   `json:"synced"`
 	}
 
 	// A ScanRequest scans a host's settings and price table

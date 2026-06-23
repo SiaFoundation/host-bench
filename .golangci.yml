@@ -10,17 +10,35 @@ linters:
     - govet
     - misspell
     - revive
+    - tagliatelle
     - whitespace
+    - unused
+    - unparam
   settings:
     gocritic:
-      enabled-checks:
-        - nilValReturn
-        - weakCond
-        - boolExprSimplify
-        - builtinShadow
-        - emptyFallthrough
-        - hexLiteral
-        - equalFold
+      disabled-checks:
+        - appendAssign
+        - commentedOutCode
+        - uncheckedInlineErr
+        - httpNoBody
+        - exitAfterDefer
+        - ifElseChain
+        - importShadow
+        - initClause
+        - nestingReduce
+        - octalLiteral
+        - paramTypeCombine
+        - ptrToRefParam
+        - stringsCompare
+        - tooManyResultsChecker
+        - typeDefFirst
+        - typeUnparen
+        - unlabelStmt
+        - unnamedResult
+        - whyNoLint
+      enabled-tags:
+        - diagnostic
+        - style
     govet:
       disable-all: false
     revive:
@@ -44,11 +62,11 @@ linters:
         - name: if-return
           disabled: false
         - name: indent-error-flow
-          disabled: false
+          disabled: true
         - name: increment-decrement
           disabled: false
         - name: modifies-value-receiver
-          disabled: false
+          disabled: true
         - name: optimize-operands-order
           disabled: false
         - name: range-val-in-closure
@@ -69,6 +87,11 @@ linters:
           disabled: false
         - name: package-comments
           disabled: true
+    tagliatelle:
+      case:
+        rules:
+          json: goCamel
+          yaml: goCamel
   exclusions:
     generated: lax
     paths:
