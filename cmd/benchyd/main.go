@@ -361,7 +361,7 @@ func main() {
 	flag.StringVar(&explorerURL, "explorer.url", "", "explorer URL for instant sync")
 	flag.StringVar(&peerList, "peers", "", "comma-separated syncer peers")
 	flag.StringVar(&logLevel, "log.level", "info", "log level")
-	flag.BoolVar(&bootstrapPeers, "bootstrap", false, "bootstrap peers")
+	flag.BoolVar(&bootstrapPeers, "bootstrap", true, "bootstrap peers")
 	flag.BoolVar(&instantSync, "instant", false, "instant sync from an explorer checkpoint")
 	flag.Parse()
 
